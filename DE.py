@@ -16,9 +16,9 @@ std = torch.tensor([0.229, 0.224, 0.225]).cuda()  # 通道标准差
 
 
 
-IMG_SIZE = 224
-PATCH_SIZE = 4
-SEQ_SIZE = int((IMG_SIZE / PATCH_SIZE) * (IMG_SIZE / PATCH_SIZE)) # 196
+# IMG_SIZE = 224
+# PATCH_SIZE = 4
+# SEQ_SIZE = int((IMG_SIZE / PATCH_SIZE) * (IMG_SIZE / PATCH_SIZE)) # 196
 
 ###########################################
 #   parameters setting
@@ -30,44 +30,46 @@ CR = 0.8
 query_count = 0
 
 
-def init_population(batch_size, population_size, cluster_num, minipatch_num):
+def init_population(population_size, patch_num, minipatch_num, img_size, tile_size):
     """
-    初始化种群，支持批次维度，并对种群中的个体进行聚集操作。
-    参数:
-        - batch_size: 图像批次大小
-    返回:
-        - population: 种群矩阵，形状 [batch_size, population_size, SEQ_SIZE]
+    init_population
+    inputs:
+        - population_size: population size
+        - patch_num: patch number
+        - minipatch_num: patch area
+    rerturns:
+        - population: [population_size, SEQ_SIZE]
     """
+    individual_length = (img_size // tile_size) ** 2 # coding length
 
     # 初始化二进制种群
-    binary_population = np.zeros((batch_size, population_size, SEQ_SIZE), dtype=int)
+    binary_population = np.zeros((population_size, individual_length), dtype=int)
     # 初始化RGB像素值种群
-    rgb_population = np.zeros((batch_size, population_size, minipatch_num, 3), dtype=int)
+    rgb_population = np.zeros((population_size, minipatch_num, 3), dtype=int) # shape: (1, 25, 64, 3)
 
+    for p in range(population_size):  # 遍历每个个体
+        # 每个个体随机选择 PATCH_NUM 个位置设置为 1
+        patch_indices = np.random.choice(individual_length, minipatch_num, replace=False)
+        individual = np.zeros(individual_length, dtype=int)
+        individual[patch_indices] = 1
 
-    for b in range(batch_size):  # 遍历每个批次
-        for p in range(population_size):  # 遍历每个个体
-            # 每个个体随机选择 PATCH_NUM 个位置设置为 1
-            patch_indices = np.random.choice(SEQ_SIZE, minipatch_num, replace=False)
-            individual = np.zeros(SEQ_SIZE, dtype=int)
-            individual[patch_indices] = 1
+        individual_c = squeeze_individual(individual, patch_num, individual_length)
+        # 存入种群
+        binary_population[p] = individual_c
+        
+        # 为每个选择的位置生成随机的RGB值
+        # rgb_values = np.random.randint(0, 256, size=(minipatch_num, 3), dtype=int)
 
-            individual1 = squeeze_individual(individual, cluster_num, SEQ_SIZE)
-            # 存入种群
-            binary_population[b, p] = individual1
-            
-            # 为每个选择的位置生成随机的RGB值
-            # rgb_values = np.random.randint(0, 256, size=(minipatch_num, 3), dtype=int)
+        rgb_values = np.random.normal(loc=128, scale=50, size=(minipatch_num, 3))
 
-            rgb_values = np.random.normal(loc=128, scale=50, size=(minipatch_num, 3))
+        # rgb_values = np.clip(rgb_values, 0, 255).astype(np.uint8)
+        rgb_values = np.clip(rgb_values, 0, 255).astype(np.float32)
 
-            rgb_values = np.clip(rgb_values, 0, 255).astype(np.uint8)
+        # step = 255 // (64 - 1) if 64 > 1 else 255
+        # rgb_values = np.array([[i * step % 256, 255 - (i * step % 256), (i * step // 2) % 256] 
+        #                        for i in range(64)], dtype=int)
+        rgb_population[p] = rgb_values
 
-            # step = 255 // (64 - 1) if 64 > 1 else 255
-            # rgb_values = np.array([[i * step % 256, 255 - (i * step % 256), (i * step // 2) % 256] 
-            #                        for i in range(64)], dtype=int)
-            rgb_population[b, p] = rgb_values
-    
     # 合并种群为一个列表
     population = [binary_population, rgb_population]
 
@@ -108,7 +110,7 @@ def decode_individual(binary_code, rgb_code, grid_size, tile_size,
 
     for p in range(min(minipatch_num, len(one_indices))):
         x, y = divmod(one_indices[p], grid_size)
-        patch_rgb = rgb_code[p]  # [3]
+        patch_rgb = rgb_code[p]
         patch_rgb = torch.tensor(patch_rgb, dtype=torch.float32, device=device) / 255.0
 
         # 标准化
@@ -124,12 +126,12 @@ def decode_individual(binary_code, rgb_code, grid_size, tile_size,
 
     return mask, perturbation
 
-def calculate_fitness(model, minipatch_num, target_images, population, tru_labels, device='cuda', targeted=False):
+def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels, img_size, tile_size, device='cuda', targeted=False):
     """
     批量计算适应度，保留对 population_size 的单循环。
     参数:
         - model: 神经网络模型
-        - target_images: 输入的干净图像，形状 [batch_size, channels, height, width]
+        - clean_images: 输入的干净图像，形状 [batch_size, channels, height, width]
         - population: 列表，包含二进制种群和RGB种群：
           - population[0]: numpy.ndarray，二进制种群，形状 [batch_size, population_size, SEQ_SIZE]
           - population[1]: numpy.ndarray，RGB种群，形状 [batch_size, population_size, PATCH_NUM, 3]
@@ -143,27 +145,24 @@ def calculate_fitness(model, minipatch_num, target_images, population, tru_label
     binary_population = population[0]
     rgb_population = population[1]
 
-    batch_size, population_size, seq_size = binary_population.shape
-    print("batch_size, population_size, seq_size:", batch_size, population_size, seq_size)
-    print("rgb_population shape:", rgb_population.shape)
+    population_size, seq_size = binary_population.shape
 
-    target_images = target_images.cuda()
-    tru_labels = tru_labels.cuda()
-    perturbation = torch.zeros_like(target_images).cuda()
+    clean_images = clean_images.to(device)
+    tru_labels = tru_labels.to(device)
+    perturbation = torch.zeros_like(clean_images).to(device)
 
-    grid_size = IMG_SIZE // PATCH_SIZE  # e.g., 224/4=56
-    tile_size = (PATCH_SIZE, PATCH_SIZE)  # e.g., 16x16
+    grid_size = img_size // tile_size  # e.g., 224/4=56
 
 
-    fitness = np.zeros((batch_size, population_size))  # 存储适应度值
+    fitness = np.zeros(population_size)  # 存储适应度值
 
     for i in range(population_size):  # 遍历种群中的每个个体
-        mask, perturbation = decode_individual(binary_population[:,i], rgb_population[:,i], grid_size, PATCH_SIZE, 
-                          minipatch_num, mu, std, target_images, device)
+        mask, perturbation = decode_individual(binary_population[i], rgb_population[i], grid_size, tile_size, 
+                          minipatch_num, mu, std, clean_images, device)
 
 
         # Create adversarial images for this individual
-        adv_images = target_images * (1 - mask) + perturbation * mask
+        adv_images = clean_images * (1 - mask) + perturbation * mask
 
         # Forward pass for this population individual
         
@@ -175,11 +174,7 @@ def calculate_fitness(model, minipatch_num, target_images, population, tru_label
             loss = - criterion(out, tru_labels)
         else:
             loss = criterion(out, tru_labels)
-        fitness[:, i] = loss.item()  # Store fitness for this individual
-
-        # # Calculate loss for this individual
-        # loss = torch.nn.functional.cross_entropy(out, tru_labels, reduction='none')  # Shape: [batch_size]
-        # fitness[:, i] = loss.detach().cpu().numpy()  # Detach and store fitness for this individual
+        fitness[i] = loss.item()  # Store fitness for this individual
 
     return fitness
 
@@ -187,7 +182,7 @@ def calculate_fitness(model, minipatch_num, target_images, population, tru_label
 
 
 
-def mutation(batch_size, population_size, population):
+def mutation(population_size, population):
     """
     批量处理种群变异操作，确保变异向量形成连通域。
     population: numpy.ndarray，形状为 [batch_size, population_size, SEQ_SIZE]
@@ -199,38 +194,38 @@ def mutation(batch_size, population_size, population):
     M_binary_population = np.zeros_like(binary_population)
     M_rgb_population = np.zeros_like(rgb_population)
 
-    for b in range(batch_size):  # 遍历每个批次
-        for i in range(population_size):
-            # 随机选择三个不同的个体 r1, r2, r3
-            while True:
-                r1, r2, r3 = np.random.choice(population_size, 3, replace=False)
-                if r1 != i and r2 != i and r3 != i:
-                    break
 
-            # 二进制种群变异
-            mutant_vector = (binary_population[b, r1] + 1 * (binary_population[b, r2] - binary_population[b, r3])) % 2
-            # mutant_vector = ensure_clusters(mutant_vector)  # 修复变异向量（如果需要）
-            M_binary_population[b, i] = mutant_vector
+    for i in range(population_size):
+        # 随机选择三个不同的个体 r1, r2, r3
+        while True:
+            r1, r2, r3 = np.random.choice(population_size, 3, replace=False)
+            if r1 != i and r2 != i and r3 != i:
+                break
 
-            # # RGB种群变异
-            # np.random.shuffle(rgb_population[b, r1])
-            # 复制原始数组的部分并打乱
-            rgb_copy1 = np.copy(rgb_population[b, r2])
-            rgb_copy2 = np.copy(rgb_population[b, r3])
+        # 二进制种群变异
+        mutant_vector = (binary_population[r1] + 1 * (binary_population[r2] - binary_population[r3])) % 2
+        # mutant_vector = ensure_clusters(mutant_vector)  # 修复变异向量（如果需要）
+        M_binary_population[i] = mutant_vector
 
-            # 打乱复制的数组
-            np.random.shuffle(rgb_copy1)
-            np.random.shuffle(rgb_copy2)
-            mutant_rgb = rgb_population[b, r1] +  F * (rgb_copy1 - rgb_copy2)
-            # 随机生成RGB
-            # mutant_rgb = np.random.randint(0, 256, size=(PATCH_NUM, 3), dtype=int)
-            mutant_rgb = np.clip(mutant_rgb, 0, 255)  # 确保RGB值在有效范围内
-            M_rgb_population[b, i] = mutant_rgb
+        # # RGB种群变异
+        # np.random.shuffle(rgb_population[b, r1])
+        # 复制原始数组的部分并打乱
+        rgb_copy1 = np.copy(rgb_population[r2])
+        rgb_copy2 = np.copy(rgb_population[r3])
+
+        # 打乱复制的数组
+        np.random.shuffle(rgb_copy1)
+        np.random.shuffle(rgb_copy2)
+        mutant_rgb = rgb_population[r1] +  F * (rgb_copy1 - rgb_copy2)
+        # 随机生成RGB
+        # mutant_rgb = np.random.randint(0, 256, size=(PATCH_NUM, 3), dtype=int)
+        mutant_rgb = np.clip(mutant_rgb, 0, 255)  # 确保RGB值在有效范围内
+        M_rgb_population[i] = mutant_rgb
 
     return [M_binary_population, M_rgb_population]
 
 
-def crossover(batch_size, population_size, Mpopulation, population, cluster_num, minipatch_num):
+def crossover(population_size, Mpopulation, population, cluster_num, minipatch_num, individual_length):
 
     binary_population = population[0]
     rgb_population = population[1]
@@ -242,32 +237,32 @@ def crossover(batch_size, population_size, Mpopulation, population, cluster_num,
     C_rgb_population = np.zeros_like(rgb_population)
 
     
-    for b in range(batch_size):  # 遍历每个批次
-        for i in range(population_size):
-            # 随机生成 [0, 1) 的数，决定每个位置是否从变异种群继承
-            crossover_mask = np.random.rand(SEQ_SIZE) < CR
-            
-            # 确保至少有一个位置来自变异种群，避免完全复制当前个体
-            mutated_one_indices = np.where(M_binary_population[b, i] == 1)[0]  # 变异种群中的 1 的位置
-            rand_one_index = np.random.choice(mutated_one_indices)
-            crossover_mask[rand_one_index] = True
 
-            # 生成试验向量
-            trial_vector = np.where(crossover_mask, M_binary_population[b, i], binary_population[b, i])
+    for i in range(population_size):
+        # 随机生成 [0, 1) 的数，决定每个位置是否从变异种群继承
+        crossover_mask = np.random.rand(individual_length) < CR
+        
+        # 确保至少有一个位置来自变异种群，避免完全复制当前个体
+        mutated_one_indices = np.where(M_binary_population[i] == 1)[0]  # 变异种群中的 1 的位置
+        rand_one_index = np.random.choice(mutated_one_indices)
+        crossover_mask[rand_one_index] = True
 
-            # 修复试验向量，使其包含 PATCH_NUM 个 1
-            trial_vector = fix_patch_num(trial_vector, minipatch_num)
+        # 生成试验向量
+        trial_vector = np.where(crossover_mask, M_binary_population[i], binary_population[i])
 
-            # 对试验向量进行白点聚集
-            trial_vector = squeeze_individual(trial_vector, cluster_num, SEQ_SIZE)
+        # 修复试验向量，使其包含 PATCH_NUM 个 1
+        trial_vector = fix_patch_num(trial_vector, minipatch_num)
 
-            # 存入试验种群（二进制部分）
-            C_binary_population[b, i] = trial_vector
+        # 对试验向量进行白点聚集
+        trial_vector = squeeze_individual(trial_vector, cluster_num, individual_length)
 
-            # 生成试验向量（RGB部分）
-            crossover_mask_rgb = np.random.rand(minipatch_num, 3) < CR
-            trial_rgb = np.where(crossover_mask_rgb, M_rgb_population[b, i], rgb_population[b, i])
-            C_rgb_population[b, i] = trial_rgb
+        # 存入试验种群（二进制部分）
+        C_binary_population[i] = trial_vector
+
+        # 生成试验向量（RGB部分）
+        crossover_mask_rgb = np.random.rand(minipatch_num, 3) < CR
+        trial_rgb = np.where(crossover_mask_rgb, M_rgb_population[i], rgb_population[i])
+        C_rgb_population[i] = trial_rgb
 
     return [C_binary_population, C_rgb_population]
 
@@ -328,21 +323,21 @@ def move_towards_nearby_point(point, target_point, image):
 
     return None
 
-def squeeze_individual(individual, num_clusters, SEQ_SIZE, max_iterations=100, neighborhood_radius=1):
+def squeeze_individual(individual, num_clusters, individual_length, max_iterations=100, neighborhood_radius=1):
     """
     对一个个体进行聚集操作，将 1 的位置聚集成紧密的簇，通过向随机选定的簇内白点及其邻域中的点移动。
     参数:
         - individual: 输入个体 (1D numpy array)，长度为 SEQ_SIZE。
         - num_clusters: 聚类的数量。
-        - SEQ_SIZE: 编码序列长度，假设为平方数以便转化为二维形状。
+        - individual_length: 编码序列长度，假设为平方数以便转化为二维形状。
         - max_iterations: 最大迭代次数。
         - neighborhood_radius: 选定白点邻域的半径。
     返回:
         - squeezed_individual: 聚集后的个体 (1D numpy array)。
     """
-    # 确保 SEQ_SIZE 是一个完全平方数，便于映射到二维
-    grid_size = int(np.sqrt(SEQ_SIZE))
-    assert grid_size ** 2 == SEQ_SIZE, "SEQ_SIZE 必须是一个完全平方数！"
+    # 确保 individual_length 是一个完全平方数，便于映射到二维
+    grid_size = int(np.sqrt(individual_length))
+    assert grid_size ** 2 == individual_length, "individual_length 必须是一个完全平方数！"
 
     # 转换为二维图像
     image = individual.reshape(grid_size, grid_size)
@@ -408,7 +403,7 @@ def squeeze_individual(individual, num_clusters, SEQ_SIZE, max_iterations=100, n
     squeezed_individual = image.flatten()
     return squeezed_individual
 
-def selection(batch_size, minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label):
+def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size):
 
     binary_population = population[0]
     rgb_population = population[1]
@@ -421,19 +416,19 @@ def selection(batch_size, minipatch_num, population_size, model, target_image, C
 
 
     # 计算 population, Cpopulation 的适应度
-    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label)
+    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size)
 
-    for b in range(batch_size):
-        for i in range(population_size):
-            # 比较适应度，选择更优的个体
-            if cfitness[b, i] > pfitness[b, i]:  # 假设适应度越大越好
-                next_binary_population[b, i] = C_binary_population[b, i]
-                next_rgb_population[b, i] = C_rgb_population[b, i]
-                next_fitness[b, i] = cfitness[b, i]
-            else:
-                next_binary_population[b, i] = binary_population[b, i]
-                next_rgb_population[b, i] = rgb_population[b, i]
-                next_fitness[b, i] = pfitness[b, i]
+
+    for i in range(population_size):
+        # 比较适应度，选择更优的个体
+        if cfitness[i] > pfitness[i]:  # 假设适应度越大越好
+            next_binary_population[i] = C_binary_population[i]
+            next_rgb_population[i] = C_rgb_population[i]
+            next_fitness[i] = cfitness[i]
+        else:
+            next_binary_population[i] = binary_population[i]
+            next_rgb_population[i] = rgb_population[i]
+            next_fitness[i] = pfitness[i]
 
     return [next_binary_population, next_rgb_population], next_fitness
 
@@ -450,10 +445,10 @@ def fitness_selection(fitness):
     """
 
     # 找到每个批次的最优适应度值索引
-    best_indices = np.argmax(fitness, axis=1)  # 每批次中最大适应度值的索引
+    best_indices = np.argmax(fitness)  # 每批次中最大适应度值的索引
 
     # 根据索引获取每批次的最优适应度值
-    best_fitness_values = fitness[np.arange(fitness.shape[0]), best_indices]  # 取出每批次最优适应度值
+    best_fitness_values = fitness[best_indices]  # 取出每批次最优适应度值
 
-    return best_indices.tolist(), best_fitness_values.tolist()
+    return best_indices, best_fitness_values
 

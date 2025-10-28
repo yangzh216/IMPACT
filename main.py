@@ -12,7 +12,7 @@ from models.bagnet import bagnet17
 from models.resnet import ResNet50, ResNet152, ResNet101
 from utils import clamp, get_loaders, my_logger, my_meter, denormalize, get_loaders_CIFAR100, get_loaders_CIFAR10
 
-from DE import init_population, mutation, crossover, calculate_fitness, selection,fitness_selection
+from DE import init_population, mutation, crossover, calculate_fitness, selection,fitness_selection,decode_individual
 import DE
 
 from torchvision.models import resnet50
@@ -40,7 +40,7 @@ def get_aug():
 
     parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet18_cifar100','mixer-b','bagnet17', 'AT_ResNet50',
                                                                            'ResNet152', 'ResNet50', 'ResNet18', 'VGG16','ViT-B'])
-    parser.add_argument('--dataset_size', default=10, type=float, help='Use part of Eval set')
+    parser.add_argument('--dataset_size', default=100, type=float, help='Use part of Eval set')
 
 
     parser.add_argument('--patch_num', default=3, type=int)
@@ -52,7 +52,7 @@ def get_aug():
     parser.add_argument('--DE_attack_iters', default=139, type=int)
     parser.add_argument('--ES_attack_iters', default=1500, type=int)
 
-    parser.add_argument('--seed', default=0, type=int, help='Random seed')
+    parser.add_argument('--seed', default=1, type=int, help='Random seed')
 
     parser.add_argument('--mu', default=[0.485, 0.456, 0.406], nargs='+', type=float, help='The mean value of the dataset') 
     parser.add_argument('--std', default=[0.229, 0.224, 0.225], nargs='+', type=float, help='The std value of the dataset') 
@@ -81,6 +81,7 @@ def main():
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
   
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # load model
     if args.network == 'ResNet50':
         model = ResNet50(pretrained=True)
@@ -215,14 +216,14 @@ def main():
         meter.add_loss_acc_asr("Base", {'CE': loss.item()}, correct_num, 0, 0, y.size(0))
 
 
+
         # 初始化种群
-        binary_population, rgb_population = init_population(args.batch_size, args.population_size, args.patch_num, args.minipatch_num)
+        binary_population, rgb_population = init_population(args.population_size, args.patch_num, args.minipatch_num, args.img_size, args.tile_size)
         
         population = [binary_population, rgb_population]
         # # 计算初始适应度
-        fitness = calculate_fitness(model, args.minipatch_num, X, population, y)  # 形状 [batch_size, population_size]
+        fitness = calculate_fitness(model, args.minipatch_num, X, population, y,args.img_size, args.tile_size, device,targeted=False)  # 形状 [batch_size, population_size]
                 
-
         attack_successful = torch.zeros(args.batch_size, dtype=torch.bool).cuda()  # 每个样本是否成功攻击
         for step in range(args.DE_attack_iters):
             # 如果所有样本已经成功攻击，跳出循环
@@ -231,51 +232,56 @@ def main():
 
                 
             # 变异操作
-            M_binary_population, M_rgb_population = mutation(args.batch_size, args.population_size, [binary_population, rgb_population])  # 按01编码和RGB进行变异
+            M_binary_population, M_rgb_population = mutation(args.population_size, [binary_population, rgb_population])  # 按01编码和RGB进行变异
             
-            
+            individual_length = (args.img_size // args.tile_size) * (args.img_size // args.tile_size)
             # 交叉操作
-            C_binary_population, C_rgb_population = crossover(args.batch_size, args.population_size,[M_binary_population, M_rgb_population], [binary_population, rgb_population], args.patch_num, args.minipatch_num)  # 按概率交叉
+            C_binary_population, C_rgb_population = crossover(args.population_size,[M_binary_population, M_rgb_population], [binary_population, rgb_population], args.patch_num, args.minipatch_num, individual_length)  # 按概率交叉
 
             # 选择操作，比较适应度
             [binary_population, rgb_population], fitness = selection(
-                args.batch_size, args.minipatch_num, args.population_size, model, X, [C_binary_population, C_rgb_population], [binary_population, rgb_population], fitness, y
+                args.minipatch_num, args.population_size, model, X, [C_binary_population, C_rgb_population], [binary_population, rgb_population], fitness, y, args.img_size, args.tile_size
             )
 
             # 获取每批次中当前最优的个体
             best_indices, best_fitness_values = fitness_selection(fitness)
-            best_binary_individuals = binary_population[np.arange(args.batch_size), best_indices]
+            best_binary_individuals = binary_population[best_indices]
+            best_rgb_individuals = rgb_population[best_indices]
 
 
             # 输出调试信息
             print(f"Step {step}: Best fitness values: {best_fitness_values}")
 
-            # 构造掩码
-            best_masks = best_binary_individuals.reshape(args.batch_size, (args.img_size // args.tile_size), (args.img_size // args.tile_size))
-            best_masks = np.kron(best_masks, np.ones((args.tile_size, args.tile_size), dtype=int))  # 扩展到完整 mask
-            best_masks = torch.tensor(best_masks, dtype=torch.float32).unsqueeze(1).cuda()  # 添加通道维度
+            # # 构造掩码
+            # best_masks = best_binary_individuals.reshape(args.batch_size, (args.img_size // args.tile_size), (args.img_size // args.tile_size))
+            # best_masks = np.kron(best_masks, np.ones((args.tile_size, args.tile_size), dtype=int))  # 扩展到完整 mask
+            # best_masks = torch.tensor(best_masks, dtype=torch.float32).unsqueeze(1).cuda()  # 添加通道维度
             
 
-            # mu1 = torch.tensor([0.485, 0.456, 0.406]).cuda()  # 通道均值
-            # std1 = torch.tensor([0.229, 0.224, 0.225]).cuda()  # 通道标准差
+            mu1 = torch.tensor([0.485, 0.456, 0.406]).cuda()  # 通道均值
+            std1 = torch.tensor([0.229, 0.224, 0.225]).cuda()  # 通道标准差
 
-            mu1 = torch.tensor([0.4914, 0.4822, 0.4465]).cuda()  # 通道均值
-            std1 = torch.tensor([0.2470, 0.2435, 0.2616]).cuda()  # 通道标准差
+            # mu1 = torch.tensor([0.4914, 0.4822, 0.4465]).cuda()  # 通道均值
+            # std1 = torch.tensor([0.2470, 0.2435, 0.2616]).cuda()  # 通道标准差
 
-            # 构造扰动
-            best_perturbation = torch.zeros_like(X).cuda()
-            for b in range(args.batch_size):  # 遍历每个批次
-                for p in range(args.minipatch_num):  # 遍历每个 patch
-                    one_indices = np.where(binary_population[b, best_indices[b]] == 1)[0]
-                    if len(one_indices) > p:
-                        xx, yy = divmod(one_indices[p], (args.img_size // args.tile_size))
-                        patch_rgb = rgb_population[b, best_indices[b], p]  # 提取原始 RGB 值
-                        patch_rgb = torch.tensor(patch_rgb, dtype=torch.float32, device='cuda')  # 转为 PyTorch 张量
-                        patch_rgb = patch_rgb / 255.0  # 归一化到 [0, 1]
-                        patch_rgb = (patch_rgb - mu1) / std1  # 标准化
-                        best_perturbation[b, :, xx * args.tile_size:(xx + 1) * args.tile_size, yy * args.tile_size:(yy + 1) * args.tile_size] = patch_rgb.view(3, 1, 1)
 
-            # 获取遮挡图
+            best_masks, best_perturbation = decode_individual(best_binary_individuals, best_rgb_individuals, (args.img_size // args.tile_size), args.tile_size, 
+                      args.minipatch_num, mu1, std1, X, device='cuda')
+
+            # # 构造扰动
+            # best_perturbation = torch.zeros_like(X).cuda()
+            # for b in range(args.batch_size):  # 遍历每个批次
+            #     for p in range(args.minipatch_num):  # 遍历每个 patch
+            #         one_indices = np.where(binary_population[b, best_indices[b]] == 1)[0]
+            #         if len(one_indices) > p:
+            #             xx, yy = divmod(one_indices[p], (args.img_size // args.tile_size))
+            #             patch_rgb = rgb_population[b, best_indices[b], p]  # 提取原始 RGB 值
+            #             patch_rgb = torch.tensor(patch_rgb, dtype=torch.float32, device='cuda')  # 转为 PyTorch 张量
+            #             patch_rgb = patch_rgb / 255.0  # 归一化到 [0, 1]
+            #             patch_rgb = (patch_rgb - mu1) / std1  # 标准化
+            #             best_perturbation[b, :, xx * args.tile_size:(xx + 1) * args.tile_size, yy * args.tile_size:(yy + 1) * args.tile_size] = patch_rgb.view(3, 1, 1)
+
+            # # 获取遮挡图
             # print(best_masks.shape)
             map_image = best_masks[0].detach().cpu()
             max_val = map_image.max()
@@ -313,6 +319,7 @@ def main():
         successful_samples = attack_successful.clone()  # 记录成功攻击的样本
         
         current_loss = criterion(out,y if args.target_label is None else target_y).item()
+        print(f"current_loss before ES: {current_loss}")
 
         for es_step in range(args.ES_attack_iters):
             if successful_samples.all():
@@ -383,10 +390,8 @@ def main():
             pil_image.save('adversarial_image.png')
 
 
-            if 'DeiT' in args.network:
-                out, atten = model(perturb_x)
-            else:
-                out = model(perturb_x)
+
+            out = model(perturb_x)
 
 
             # 评估有目标攻击的结果
