@@ -9,7 +9,7 @@ import numpy as np
 import time
 
 from models.bagnet import bagnet17
-from models.resnet import ResNet50, ResNet152, ResNet101
+from models.resnet import ResNet50
 from utils import clamp, get_loaders, my_logger, my_meter, denormalize, get_loaders_CIFAR100, get_loaders_CIFAR10
 
 from DE import init_population, mutation, crossover, calculate_fitness, selection,fitness_selection,decode_individual
@@ -18,17 +18,15 @@ import DE
 from torchvision.models import resnet50
 
 from torchvision.models import vgg16
-import timm
 
 import torchvision.transforms.functional as FF
-import math
 
 
 
 def get_aug():
     parser = argparse.ArgumentParser(description='IMPACT')
 
-    parser.add_argument('--name', default='', type=str)
+    parser.add_argument('--name', default='IMPACT', type=str)
     parser.add_argument('--batch_size', default=1, type=int)
 
     parser.add_argument('--dataset', default='ImageNet', type=str,  choices=['ImageNet','CIFAR100', 'CIFAR10'])
@@ -38,7 +36,7 @@ def get_aug():
     parser.add_argument('--img_size', default=224, type=int)
     parser.add_argument('--workers', default=16, type=int)
 
-    parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet18_cifar100','mixer-b','bagnet17', 'AT_ResNet50',
+    parser.add_argument('--network', default='ViT-B', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100','mixer-b',
                                                                            'ResNet152', 'ResNet50', 'ResNet18', 'VGG16','ViT-B'])
     parser.add_argument('--dataset_size', default=100, type=float, help='Use part of Eval set')
 
@@ -59,6 +57,7 @@ def get_aug():
 
     parser.add_argument('--targeted', action='store_true', help='Whether to perform targeted attack')
     parser.add_argument('--target_label', default=None, type=int, help='Target class label for targeted attack')
+    parser.add_argument('--device', default='cuda:0', type=str, help='Device to use for computation')
 
 
     args = parser.parse_args()
@@ -81,7 +80,7 @@ def main():
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
   
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     # load model
     if args.network == 'ResNet50':
         model = ResNet50(pretrained=True)
@@ -89,57 +88,16 @@ def main():
         model = torchvision.models.vgg16(pretrained=True)
     elif args.network == 'ViT-B':
         model = torchvision.models.vit_b_16(weights=torchvision.models.ViT_B_16_Weights.DEFAULT)
-        
-
-    # elif args.network == 'AT_ResNet50':
-    #     current_dir = os.getcwd()
-    #     robustness_parent_dir = os.path.abspath(os.path.join(current_dir, '..', 'patch_defenses', 'robustness')) 
-    #     if os.path.isdir(robustness_parent_dir) and robustness_parent_dir not in sys.path:
-    #         sys.path.insert(0, robustness_parent_dir) # insert(0, ...) 优先搜索此路径
-    #         print(f"Added directory to sys.path: {robustness_parent_dir}")
-    #     elif robustness_parent_dir in sys.path:
-    #         print(f"Directory already in sys.path: {robustness_parent_dir}")
-    #     else:
-    #         print(f"Error: Directory not found: {robustness_parent_dir}")
-    #         # 可以选择退出或抛出异常
-    #         # sys.exit(1) 
-
-    #     # 4. 现在你可以正常导入 robustness 库及其内容了
-    #     try:
-    #         import torch as ch # robustness 库常用别名
-    #         from robustness.datasets import ImageNet # 或者 CIFAR
-    #         from robustness.model_utils import make_and_restore_model
-    #     except ImportError as e:
-    #         print(f"Error importing robustness library: {e}")
-    #         print("Please ensure the path added to sys.path is correct and the library exists.")
-    #         sys.exit(1)        
-    #     imagenet_path = '/data/yzh/ImageNet'
-    #     ds = ImageNet(imagenet_path)
-    #     resume_path = '/home/yzh/adversarial_patch/IMP/defense_pt/imagenet_linf_4.pt'
-    #     model, checkpoint = make_and_restore_model(arch='resnet50', dataset=ds,
-    #                                             resume_path=resume_path) 
-    #     print("Robust model loaded successfully!")
-
-    elif args.network == 'bagnet17':
-        model = bagnet17(pretrained=True,clip_range=None,aggregation='mean')
-        model = torch.nn.DataParallel(model)
-        checkpoint = torch.load('/home/yzh/adversarial_patch/patch_defenses/PatchGuard/checkpoints/bagnet17_net.pth')
-        model.load_state_dict(checkpoint['state_dict'])
-
     elif args.network == 'resnet50_cifar100':
-        # print([m for m in timm.list_models() if 'cifar10' in m])
-        # model = timm.create_model('resnet32_cifar100', pretrained=True, num_classes=100)
         model = resnet50(num_classes=100)
         model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        model.maxpool = nn.Identity()  # 去掉 maxpool
+        model.maxpool = nn.Identity()
         checkpoint = torch.load("/home/yzh/adversarial_patch/IMP/models/cifar100_models/resnet50/pytorch_model.bin")
         model.load_state_dict(checkpoint)
     elif args.network == 'resnet50_cifar10':
-        # print([m for m in timm.list_models() if 'cifar10' in m])
-        # model = timm.create_model('resnet32_cifar100', pretrained=True, num_classes=100)
         model = resnet50(num_classes=10)
         model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        model.maxpool = nn.Identity()  # 去掉 maxpool
+        model.maxpool = nn.Identity()
         checkpoint = torch.load("/home/yzh/adversarial_patch/IMP/models/cifar10_models/resnet50/pytorch_model.bin")
         model.load_state_dict(checkpoint)
     else:
@@ -150,11 +108,11 @@ def main():
 
 
 
-    model = model.cuda()
+    model = model.to(device)
     model.eval()
 
     # loss
-    criterion = nn.CrossEntropyLoss(reduction='none').cuda()
+    criterion = nn.CrossEntropyLoss(reduction='none').to(device)
 
     # eval dataset
     if args.dataset == 'ImageNet':
@@ -164,14 +122,11 @@ def main():
     elif args.dataset == 'CIFAR10':
         loader = get_loaders_CIFAR10(args)
 
-    mu = torch.tensor(args.mu).view(3, 1, 1).cuda()
-    std = torch.tensor(args.std).view(3, 1, 1).cuda()
+    mu = torch.tensor(args.mu).view(3, 1, 1).to(device)
+    std = torch.tensor(args.std).view(3, 1, 1).to(device)
 
 
     start_time = time.time()
-
-    '''Original image been classified incorrect but turn to be correct after adv attack'''
-    false2true_num = 0
 
     successful_count = 0
 
@@ -193,7 +148,7 @@ def main():
         DE.query_count = 0
 
 
-        X, y = X.cuda(), y.cuda()
+        X, y = X.to(device), y.to(device)
 
         model.zero_grad()
         if 'DeiT' in args.network:
@@ -208,7 +163,7 @@ def main():
 
         # 处理目标攻击的损失
         if args.target_label is not None:
-            target_y = torch.full_like(y, args.target_label).cuda()  # 固定目标标签
+            target_y = torch.full_like(y, args.target_label).to(device)  # 固定目标标签
             loss = criterion(out, target_y)
         else:
             loss = criterion(out, y)
@@ -224,7 +179,7 @@ def main():
         # # 计算初始适应度
         fitness = calculate_fitness(model, args.minipatch_num, X, population, y,args.img_size, args.tile_size, device,targeted=False)  # 形状 [batch_size, population_size]
                 
-        attack_successful = torch.zeros(args.batch_size, dtype=torch.bool).cuda()  # 每个样本是否成功攻击
+        attack_successful = torch.zeros(args.batch_size, dtype=torch.bool).to(device)  # 每个样本是否成功攻击
         for step in range(args.DE_attack_iters):
             # 如果所有样本已经成功攻击，跳出循环
             if attack_successful.all():
@@ -240,7 +195,7 @@ def main():
 
             # 选择操作，比较适应度
             [binary_population, rgb_population], fitness = selection(
-                args.minipatch_num, args.population_size, model, X, [C_binary_population, C_rgb_population], [binary_population, rgb_population], fitness, y, args.img_size, args.tile_size
+                args.minipatch_num, args.population_size, model, X, [C_binary_population, C_rgb_population], [binary_population, rgb_population], fitness, y, args.img_size, args.tile_size, device
             )
 
             # 获取每批次中当前最优的个体
@@ -252,34 +207,16 @@ def main():
             # 输出调试信息
             print(f"Step {step}: Best fitness values: {best_fitness_values}")
 
-            # # 构造掩码
-            # best_masks = best_binary_individuals.reshape(args.batch_size, (args.img_size // args.tile_size), (args.img_size // args.tile_size))
-            # best_masks = np.kron(best_masks, np.ones((args.tile_size, args.tile_size), dtype=int))  # 扩展到完整 mask
-            # best_masks = torch.tensor(best_masks, dtype=torch.float32).unsqueeze(1).cuda()  # 添加通道维度
             
-
-            mu1 = torch.tensor([0.485, 0.456, 0.406]).cuda()  # 通道均值
-            std1 = torch.tensor([0.229, 0.224, 0.225]).cuda()  # 通道标准差
+            mu1 = torch.tensor([0.485, 0.456, 0.406]).to(device)  # 通道均值
+            std1 = torch.tensor([0.229, 0.224, 0.225]).to(device)  # 通道标准差
 
             # mu1 = torch.tensor([0.4914, 0.4822, 0.4465]).cuda()  # 通道均值
             # std1 = torch.tensor([0.2470, 0.2435, 0.2616]).cuda()  # 通道标准差
 
 
             best_masks, best_perturbation = decode_individual(best_binary_individuals, best_rgb_individuals, (args.img_size // args.tile_size), args.tile_size, 
-                      args.minipatch_num, mu1, std1, X, device='cuda')
-
-            # # 构造扰动
-            # best_perturbation = torch.zeros_like(X).cuda()
-            # for b in range(args.batch_size):  # 遍历每个批次
-            #     for p in range(args.minipatch_num):  # 遍历每个 patch
-            #         one_indices = np.where(binary_population[b, best_indices[b]] == 1)[0]
-            #         if len(one_indices) > p:
-            #             xx, yy = divmod(one_indices[p], (args.img_size // args.tile_size))
-            #             patch_rgb = rgb_population[b, best_indices[b], p]  # 提取原始 RGB 值
-            #             patch_rgb = torch.tensor(patch_rgb, dtype=torch.float32, device='cuda')  # 转为 PyTorch 张量
-            #             patch_rgb = patch_rgb / 255.0  # 归一化到 [0, 1]
-            #             patch_rgb = (patch_rgb - mu1) / std1  # 标准化
-            #             best_perturbation[b, :, xx * args.tile_size:(xx + 1) * args.tile_size, yy * args.tile_size:(yy + 1) * args.tile_size] = patch_rgb.view(3, 1, 1)
+                      args.minipatch_num, mu1, std1, X, device)
 
             # # 获取遮挡图
             # print(best_masks.shape)
@@ -300,6 +237,15 @@ def main():
 
             # 生成攻击样本
             perturb_x = X * (1 - best_masks) + best_perturbation * best_masks
+
+            de_image = perturb_x[0].detach().cpu()
+            # 反标准化
+            de_image = denormalize(de_image, args.mu, args.std)
+            # 将张量的值限制在 [0, 1] 范围内（确保值在显示图像时有效）
+            de_image = torch.clamp(de_image, 0, 1)
+            pil_image = FF.to_pil_image(de_image)
+            pil_image.save('de_image.png')
+
 
 
             # 检测是否有样本攻击成功
@@ -326,7 +272,7 @@ def main():
                 break
 
             # 为每个样本生成新的扰动
-            noise = torch.normal(0, sigma, size=best_perturbation.shape).cuda()  # 高斯噪声
+            noise = torch.normal(0, sigma, size=best_perturbation.shape).to(device)  # 高斯噪声
             # noise = torch.empty_like(best_perturbation).uniform_(-sigma, sigma).cuda() #均匀分布噪声
             # momentum = beta * momentum + (1 - beta) * noise
             # new_perturbation = best_perturbation + 2 * momentum
@@ -338,12 +284,9 @@ def main():
             
             # 计算新的适应度（损失值）
             with torch.no_grad():
-                if 'DeiT' in args.network:
-                    out, atten = model(perturb_x)
-                else:
-                    out = model(perturb_x)
-                DE.query_count += 1
-                loss = criterion(out, y if args.target_label is None else target_y)
+                out = model(perturb_x)
+            DE.query_count += 1
+            loss = criterion(out, y if args.target_label is None else target_y)
 
             # 比较适应度，选择更优扰动
             for idx in range(args.batch_size):
@@ -414,10 +357,7 @@ def main():
             logger.info("Iter: [{:d}/{:d}] Loss and Acc for all models:".format(i, args.dataset_size))
             msg = meter.get_loss_acc_msg()
             logger.info(msg)
-
-            classification_result_after_attack = classification_result_after_attack[classification_result == False]
-            false2true_num += classification_result_after_attack.sum().item()
-            logger.info("Total False -> True: {}\n".format(false2true_num))
+            logger.info("\n")
 
     end_time = time.time()
     msg = meter.get_loss_acc_msg()

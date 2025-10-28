@@ -5,8 +5,8 @@ import torch.nn as nn
 
 
 # imagenet
-mu = torch.tensor([0.485, 0.456, 0.406]).cuda()  # 通道均值
-std = torch.tensor([0.229, 0.224, 0.225]).cuda()  # 通道标准差
+mu = torch.tensor([0.485, 0.456, 0.406])  # 通道均值
+std = torch.tensor([0.229, 0.224, 0.225])  # 通道标准差
 
 # mu = torch.tensor([0.5071, 0.4867, 0.4408]).cuda()  # 通道均值
 # std = torch.tensor([0.2675, 0.2565, 0.2761]).cuda()  # 通道标准差
@@ -58,9 +58,9 @@ def init_population(population_size, patch_num, minipatch_num, img_size, tile_si
         binary_population[p] = individual_c
         
         # 为每个选择的位置生成随机的RGB值
-        # rgb_values = np.random.randint(0, 256, size=(minipatch_num, 3), dtype=int)
+        rgb_values = np.random.randint(0, 256, size=(minipatch_num, 3), dtype=int)
 
-        rgb_values = np.random.normal(loc=128, scale=50, size=(minipatch_num, 3))
+        # rgb_values = np.random.normal(loc=128, scale=50, size=(minipatch_num, 3))
 
         # rgb_values = np.clip(rgb_values, 0, 255).astype(np.uint8)
         rgb_values = np.clip(rgb_values, 0, 255).astype(np.float32)
@@ -114,6 +114,8 @@ def decode_individual(binary_code, rgb_code, grid_size, tile_size,
         patch_rgb = torch.tensor(patch_rgb, dtype=torch.float32, device=device) / 255.0
 
         # 标准化
+        mu = mu.to(device)
+        std = std.to(device)
         if mu.ndim == 1:
             patch_rgb = (patch_rgb - mu) / std
         else:
@@ -403,7 +405,7 @@ def squeeze_individual(individual, num_clusters, individual_length, max_iteratio
     squeezed_individual = image.flatten()
     return squeezed_individual
 
-def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size):
+def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size, device='cuda'):
 
     binary_population = population[0]
     rgb_population = population[1]
@@ -416,7 +418,7 @@ def selection(minipatch_num, population_size, model, target_image, Cpopulation, 
 
 
     # 计算 population, Cpopulation 的适应度
-    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size)
+    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size, device)
 
 
     for i in range(population_size):
