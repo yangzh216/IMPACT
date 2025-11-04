@@ -8,7 +8,6 @@ import sys
 import numpy as np
 import time
 
-from models.bagnet import bagnet17
 from models.resnet import ResNet50
 from utils import clamp, get_loaders, my_logger, my_meter, denormalize, get_loaders_CIFAR100, get_loaders_CIFAR10
 
@@ -16,8 +15,6 @@ from DE import init_population, mutation, crossover, calculate_fitness, selectio
 import DE
 
 from torchvision.models import resnet50
-
-from torchvision.models import vgg16
 
 import torchvision.transforms.functional as FF
 
@@ -36,7 +33,7 @@ def get_aug():
     parser.add_argument('--img_size', default=224, type=int)
     parser.add_argument('--workers', default=16, type=int)
 
-    parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100','mixer-b',
+    parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100',
                                                                            'ResNet152', 'ResNet50', 'ResNet18', 'VGG16','ViT-B'])
     parser.add_argument('--dataset_size', default=100, type=float, help='Use part of Eval set')
 
