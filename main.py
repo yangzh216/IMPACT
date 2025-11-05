@@ -33,9 +33,9 @@ def get_aug():
     parser.add_argument('--img_size', default=224, type=int)
     parser.add_argument('--workers', default=16, type=int)
 
-    parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100',
+    parser.add_argument('--network', default='ViT-B', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100',
                                                                            'ResNet152', 'ResNet50', 'ResNet18', 'VGG16','ViT-B'])
-    parser.add_argument('--dataset_size', default=100, type=float, help='Use part of Eval set')
+    parser.add_argument('--dataset_size', default=500, type=float, help='Use part of Eval set')
 
 
     parser.add_argument('--patch_num', default=3, type=int)
