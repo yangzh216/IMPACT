@@ -62,7 +62,8 @@ def init_population(population_size, patch_num, minipatch_num, img_size, tile_si
         binary_population[p] = individual_c
 
         # Initialize RGB values for selected tiles (integers 0..255)
-        rgb_values = np.random.randint(0, 256, size=(minipatch_num, 3), dtype=int)
+        # rgb_values = np.random.randint(0, 256, size=(minipatch_num, 3), dtype=int)
+        rgb_values = np.random.normal(loc=128, scale=50, size=(minipatch_num, 3))
         rgb_values = np.clip(rgb_values, 0, 255).astype(np.float32)
         rgb_population[p] = rgb_values
 
@@ -122,7 +123,7 @@ def decode_individual(binary_code, rgb_code, grid_size, tile_size,
 
     return mask, perturbation
 
-def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels, img_size, tile_size, device='cuda', targeted=False):
+def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels, img_size, tile_size, device='cuda', targeted=False, target_label=None):
     """
     Compute fitness values for each individual in the population.
 
@@ -167,7 +168,7 @@ def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels
 
         criterion = nn.CrossEntropyLoss(reduction='none').to(device)
         if targeted:
-            loss = - criterion(out, tru_labels)
+            loss = - criterion(out, target_label)
         else:
             loss = criterion(out, tru_labels)
         fitness[i] = loss.item()
@@ -360,7 +361,7 @@ def squeeze_individual(individual, num_clusters, individual_length, max_iteratio
     squeezed_individual = image.flatten()
     return squeezed_individual
 
-def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size, device='cuda'):
+def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size, device='cuda', targeted=False, target_label=None):
     """
     Selection step: compare current population with trial population and keep the better individuals.
 
@@ -376,7 +377,7 @@ def selection(minipatch_num, population_size, model, target_image, Cpopulation, 
     next_fitness = np.zeros_like(pfitness)
 
     # Evaluate fitness of trial (crossover) population
-    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size, device)
+    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size, device, targeted, target_label)
 
     for i in range(population_size):
         # Choose the individual with higher fitness

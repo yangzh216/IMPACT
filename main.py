@@ -33,7 +33,7 @@ def get_aug():
     parser.add_argument('--img_size', default=224, type=int)
     parser.add_argument('--workers', default=16, type=int)
 
-    parser.add_argument('--network', default='ViT-B', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100',
+    parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100',
                                                                            'ResNet152', 'ResNet50', 'ResNet18', 'VGG16','ViT-B'])
     parser.add_argument('--dataset_size', default=500, type=float, help='Use part of Eval set')
 
@@ -44,8 +44,8 @@ def get_aug():
     parser.add_argument('--tile_size', default=4, type=int)
 
     parser.add_argument('--population_size', default=50, type=int)
-    parser.add_argument('--DE_attack_iters', default=69, type=int)
-    parser.add_argument('--ES_attack_iters', default=1500, type=int)
+    parser.add_argument('--DE_attack_iters', default=149, type=int)
+    parser.add_argument('--ES_attack_iters', default=2500, type=int)
 
     parser.add_argument('--seed', default=1, type=int, help='Random seed')
 
@@ -53,7 +53,7 @@ def get_aug():
     parser.add_argument('--std', default=[0.229, 0.224, 0.225], nargs='+', type=float, help='The std value of the dataset') 
 
     parser.add_argument('--targeted', action='store_true', help='Whether to perform targeted attack')
-    parser.add_argument('--target_label', default=None, type=int, help='Target class label for targeted attack')
+    parser.add_argument('--target_label', default=723, type=int, help='Target class label for targeted attack')
     parser.add_argument('--device', default='cuda:0', type=str, help='Device to use for computation')
 
 
@@ -164,7 +164,8 @@ def main():
         population = [binary_population, rgb_population]
 
         # calculate initial fitness
-        fitness = calculate_fitness(model, args.minipatch_num, X, population, y,args.img_size, args.tile_size, device,targeted=False)  # [batch_size, population_size]
+        fitness = calculate_fitness(model, args.minipatch_num, X, population, y,args.img_size, 
+                                    args.tile_size, device, args.targeted, target_y)  # [batch_size, population_size]
                 
         attack_successful = torch.zeros(args.batch_size, dtype=torch.bool).to(device)
         for step in range(args.DE_attack_iters):
@@ -183,7 +184,12 @@ def main():
 
             # selection operation, compare fitness
             [binary_population, rgb_population], fitness = selection(
-                args.minipatch_num, args.population_size, model, X, [C_binary_population, C_rgb_population], [binary_population, rgb_population], fitness, y, args.img_size, args.tile_size, device
+                args.minipatch_num, args.population_size, model, X, 
+                [C_binary_population, C_rgb_population], 
+                [binary_population, rgb_population], 
+                fitness, y, args.img_size, 
+                args.tile_size, device, 
+                args.targeted, target_y
             )
 
             # get best individuals
@@ -239,15 +245,24 @@ def main():
                 out = model(perturb_x)
 
                 for idx, pred in enumerate(out.max(1)[1]):
-                    if not attack_successful[idx] and pred != y[idx]:
-                        attack_successful[idx] = True
+                    if args.targeted:
+                        if not attack_successful[idx] and pred == target_y:
+                            attack_successful[idx] = True
+                    else:
+                        if not attack_successful[idx] and pred != y[idx]:
+                            attack_successful[idx] = True
 
 
-        sigma = 0.3
+        sigma = 0.1
 
         successful_samples = attack_successful.clone()
         
-        current_loss = criterion(out,y if args.target_label is None else target_y).item()
+
+        if args.targeted:
+            current_loss = -criterion(out, target_y).item()
+        else:
+            current_loss = criterion(out, y).item()
+
         print(f"current_loss before ES: {current_loss}")
 
         for es_step in range(args.ES_attack_iters):
@@ -269,7 +284,10 @@ def main():
             with torch.no_grad():
                 out = model(perturb_x)
             DE.query_count += 1
-            loss = criterion(out, y if args.target_label is None else target_y)
+            if args.targeted:
+                loss = -criterion(out, target_y)
+            else:
+                loss = criterion(out, y)
 
 
             for idx in range(args.batch_size):
@@ -284,9 +302,14 @@ def main():
 
             with torch.no_grad():
                 for idx, pred in enumerate(out.max(1)[1]): 
-                    if not successful_samples[idx] and pred != y[idx]:
-                        successful_samples[idx] = True
-                        successful_count += 1
+                    if args.targeted:
+                        if not successful_samples[idx] and pred == target_y:
+                            successful_samples[idx] = True
+                            successful_count += 1
+                    else:
+                        if not successful_samples[idx] and pred != y[idx]:
+                            successful_samples[idx] = True
+                            successful_count += 1
 
 
         logger.info(f"Optimization completed: {successful_samples.sum().item()}/{args.batch_size} samples successfully attacked.")
@@ -319,15 +342,14 @@ def main():
             out = model(perturb_x)
 
 
-            if args.target_label is not None:
-                classification_result_after_attack = out.max(1)[1] == args.target_label
-                acc_suc = out.max(1)[1] == args.target_label
+            if args.targeted:
+                classification_result_after_attack = out.max(1)[1] == y
+                acc_suc = out.max(1)[1] == target_y
                 loss = criterion(out, target_y)
             else:
                 classification_result_after_attack = out.max(1)[1] == y
                 acc_suc = out.max(1)[1] != y
                 loss = criterion(out, y)
-
 
             # classification_result_after_attack = out.max(1)[1] == y
             # loss = criterion(out, y)
