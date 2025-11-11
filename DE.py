@@ -123,7 +123,7 @@ def decode_individual(binary_code, rgb_code, grid_size, tile_size,
 
     return mask, perturbation
 
-def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels, img_size, tile_size, device='cuda', targeted=False, target_label=None):
+def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels, img_size, tile_size, device='cuda'):
     """
     Compute fitness values for each individual in the population.
 
@@ -167,10 +167,9 @@ def calculate_fitness(model, minipatch_num, clean_images, population, tru_labels
         query_count += 1
 
         criterion = nn.CrossEntropyLoss(reduction='none').to(device)
-        if targeted:
-            loss = - criterion(out, target_label)
-        else:
-            loss = criterion(out, tru_labels)
+
+        loss = criterion(out, tru_labels)
+
         fitness[i] = loss.item()
 
     return fitness
@@ -361,7 +360,7 @@ def squeeze_individual(individual, num_clusters, individual_length, max_iteratio
     squeezed_individual = image.flatten()
     return squeezed_individual
 
-def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size, device='cuda', targeted=False, target_label=None):
+def selection(minipatch_num, population_size, model, target_image, Cpopulation, population, pfitness, tru_label, img_size, tile_size, device='cuda'):
     """
     Selection step: compare current population with trial population and keep the better individuals.
 
@@ -377,7 +376,7 @@ def selection(minipatch_num, population_size, model, target_image, Cpopulation, 
     next_fitness = np.zeros_like(pfitness)
 
     # Evaluate fitness of trial (crossover) population
-    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size, device, targeted, target_label)
+    cfitness = calculate_fitness(model, minipatch_num, target_image, Cpopulation, tru_label, img_size, tile_size, device)
 
     for i in range(population_size):
         # Choose the individual with higher fitness

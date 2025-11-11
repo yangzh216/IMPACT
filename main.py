@@ -34,7 +34,7 @@ def get_aug():
     parser.add_argument('--workers', default=16, type=int)
 
     parser.add_argument('--network', default='ResNet50', type=str, choices=['resnet50_cifar10', 'resnet50_cifar100',
-                                                                           'ResNet152', 'ResNet50', 'ResNet18', 'VGG16','ViT-B'])
+                                                                           'ResNet152', 'ResNet50', 'ResNet18'])
     parser.add_argument('--dataset_size', default=500, type=float, help='Use part of Eval set')
 
 
@@ -52,8 +52,6 @@ def get_aug():
     parser.add_argument('--mu', default=[0.485, 0.456, 0.406], nargs='+', type=float, help='The mean value of the dataset') 
     parser.add_argument('--std', default=[0.229, 0.224, 0.225], nargs='+', type=float, help='The std value of the dataset') 
 
-    parser.add_argument('--targeted', action='store_true', help='Whether to perform targeted attack')
-    parser.add_argument('--target_label', default=723, type=int, help='Target class label for targeted attack')
     parser.add_argument('--device', default='cuda:0', type=str, help='Device to use for computation')
 
 
@@ -81,21 +79,17 @@ def main():
     # load model
     if args.network == 'ResNet50':
         model = ResNet50(pretrained=True)
-    elif args.network == 'VGG16':
-        model = torchvision.models.vgg16(pretrained=True)
-    elif args.network == 'ViT-B':
-        model = torchvision.models.vit_b_16(weights=torchvision.models.ViT_B_16_Weights.DEFAULT)
     elif args.network == 'resnet50_cifar100':
         model = resnet50(num_classes=100)
         model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
         model.maxpool = nn.Identity()
-        checkpoint = torch.load("/home/yzh/adversarial_patch/IMP/models/cifar100_models/resnet50/pytorch_model.bin")
+        checkpoint = torch.load("/models/cifar100_models/resnet50/pytorch_model.bin")
         model.load_state_dict(checkpoint)
     elif args.network == 'resnet50_cifar10':
         model = resnet50(num_classes=10)
         model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
         model.maxpool = nn.Identity()
-        checkpoint = torch.load("/home/yzh/adversarial_patch/IMP/models/cifar10_models/resnet50/pytorch_model.bin")
+        checkpoint = torch.load("/models/cifar10_models/resnet50/pytorch_model.bin")
         model.load_state_dict(checkpoint)
     else:
         print('Wrong Network')
@@ -130,33 +124,20 @@ def main():
     for i, (X, y) in enumerate(loader):
         if i == args.dataset_size:
             break
-
         DE.query_count = 0
-
-
         X, y = X.to(device), y.to(device)
-
         model.zero_grad()
         if 'DeiT' in args.network:
             out, atten = model(X)
         else:
             out = model(X)
-
-
         classification_result = out.max(1)[1] == y
         correct_num = classification_result.sum().item()
 
 
-        # loss of clean samples
-        if args.target_label is not None:
-            target_y = torch.full_like(y, args.target_label).to(device)
-            loss = criterion(out, target_y)
-        else:
-            loss = criterion(out, y)
+        loss = criterion(out, y)
 
         meter.add_loss_acc_asr("Base", {'CE': loss.item()}, correct_num, 0, 0, y.size(0))
-
-
 
         # initialize population
         binary_population, rgb_population = init_population(args.population_size, args.patch_num, args.minipatch_num, args.img_size, args.tile_size)
@@ -165,7 +146,7 @@ def main():
 
         # calculate initial fitness
         fitness = calculate_fitness(model, args.minipatch_num, X, population, y,args.img_size, 
-                                    args.tile_size, device, args.targeted, target_y)  # [batch_size, population_size]
+                                    args.tile_size, device)  # [batch_size, population_size]
                 
         attack_successful = torch.zeros(args.batch_size, dtype=torch.bool).to(device)
         for step in range(args.DE_attack_iters):
@@ -188,8 +169,7 @@ def main():
                 [C_binary_population, C_rgb_population], 
                 [binary_population, rgb_population], 
                 fitness, y, args.img_size, 
-                args.tile_size, device, 
-                args.targeted, target_y
+                args.tile_size, device
             )
 
             # get best individuals
@@ -245,12 +225,8 @@ def main():
                 out = model(perturb_x)
 
                 for idx, pred in enumerate(out.max(1)[1]):
-                    if args.targeted:
-                        if not attack_successful[idx] and pred == target_y:
-                            attack_successful[idx] = True
-                    else:
-                        if not attack_successful[idx] and pred != y[idx]:
-                            attack_successful[idx] = True
+                    if not attack_successful[idx] and pred != y[idx]:
+                        attack_successful[idx] = True
 
 
         sigma = 0.1
@@ -258,10 +234,8 @@ def main():
         successful_samples = attack_successful.clone()
         
 
-        if args.targeted:
-            current_loss = -criterion(out, target_y).item()
-        else:
-            current_loss = criterion(out, y).item()
+
+        current_loss = criterion(out, y).item()
 
         print(f"current_loss before ES: {current_loss}")
 
@@ -284,10 +258,8 @@ def main():
             with torch.no_grad():
                 out = model(perturb_x)
             DE.query_count += 1
-            if args.targeted:
-                loss = -criterion(out, target_y)
-            else:
-                loss = criterion(out, y)
+
+            loss = criterion(out, y)
 
 
             for idx in range(args.batch_size):
@@ -302,14 +274,10 @@ def main():
 
             with torch.no_grad():
                 for idx, pred in enumerate(out.max(1)[1]): 
-                    if args.targeted:
-                        if not successful_samples[idx] and pred == target_y:
-                            successful_samples[idx] = True
-                            successful_count += 1
-                    else:
-                        if not successful_samples[idx] and pred != y[idx]:
-                            successful_samples[idx] = True
-                            successful_count += 1
+
+                    if not successful_samples[idx] and pred != y[idx]:
+                        successful_samples[idx] = True
+                        successful_count += 1
 
 
         logger.info(f"Optimization completed: {successful_samples.sum().item()}/{args.batch_size} samples successfully attacked.")
@@ -342,14 +310,11 @@ def main():
             out = model(perturb_x)
 
 
-            if args.targeted:
-                classification_result_after_attack = out.max(1)[1] == y
-                acc_suc = out.max(1)[1] == target_y
-                loss = criterion(out, target_y)
-            else:
-                classification_result_after_attack = out.max(1)[1] == y
-                acc_suc = out.max(1)[1] != y
-                loss = criterion(out, y)
+
+
+            classification_result_after_attack = out.max(1)[1] == y
+            acc_suc = out.max(1)[1] != y
+            loss = criterion(out, y)
 
             # classification_result_after_attack = out.max(1)[1] == y
             # loss = criterion(out, y)

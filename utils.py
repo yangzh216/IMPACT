@@ -81,9 +81,9 @@ def get_loaders_CIFAR10(args):
 
 class my_logger:
     def __init__(self, args):
-        name = "{}_{}_{}_{}_{}_{}_{}_{}_{}_{}.log".format(datetime.now().strftime("%Y-%m-%d %H:%M"), 
+        name = "{}_{}_{}_{}_{}_{}_{}_{}_{}.log".format(datetime.now().strftime("%Y-%m-%d %H:%M"), 
                                                           args.seed, args.network, 
-                                                          args.dataset, args.targeted,
+                                                          args.dataset,
                                                           args.population_size, 
                                                           args.minipatch_num, args.patch_num, 
                                                           args.DE_attack_iters, args.ES_attack_iters, 
